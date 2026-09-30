@@ -235,6 +235,10 @@
   }
 
   // --- Koneksi ---
+  function onDisconnected() {
+    ch = null; setConnected(false, 'Terputus');
+    log('in', 'Koneksi terputus');
+  }
   async function connect() {
     try {
       log('in', 'Membuka pemilih perangkat Bluetooth…');
@@ -242,10 +246,7 @@
         acceptAllDevices: true,
         optionalServices: [SERVICE]
       });
-      device.addEventListener('gattserverdisconnected', () => {
-        ch = null; setConnected(false, 'Terputus');
-        log('in', 'Koneksi terputus');
-      });
+      device.addEventListener('gattserverdisconnected', onDisconnected);   // fungsi yang sama tidak terpasang ganda
       setConnected(false, `Menyambung ke ${device.name || device.id}…`);
       server = await device.gatt.connect();
       const svc = await server.getPrimaryService(SERVICE);
@@ -394,8 +395,8 @@
       el.bright.value = p.br; el.brightV.textContent = p.br;
       renderWheel();
       log('in', `Preset: ${p.n}`);
+      // SET_COLOR sudah membawa kecerahan (terbukti dari laporan bohlam), jadi cukup satu perintah.
       await setColor(p.c[0], p.c[1], p.c[2], p.w, p.br);
-      await setBrightness(p.br);   // dikirim juga, supaya kecerahan pasti diterapkan
     } catch (e) { log('er', e.message); }
   }
   function renderPresets() {
