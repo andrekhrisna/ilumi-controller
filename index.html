@@ -36,6 +36,10 @@
   .warn{background:#3a2a10;border:1px solid #6b4a14;color:#ffd58a;border-radius:10px;padding:10px 12px;font-size:.88rem;margin-bottom:12px}
   details summary{cursor:pointer;color:var(--mute);font-size:.9rem;padding:6px 0}
   .hint{font-size:.8rem;color:var(--mute);margin-top:6px}
+  .tchips{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+  .tchips button{min-height:44px;padding:8px 4px;font-variant-numeric:tabular-nums}
+  .tchips button.sel{background:var(--accent);color:#1b1300;border-color:var(--accent);font-weight:700}
+  select{width:100%;background:#12141a;color:var(--text);border:1px solid var(--line);border-radius:10px;padding:11px 10px;font:inherit}
   .chips{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
   .chips.off{opacity:.4;pointer-events:none}
   .chip{display:flex;align-items:center;gap:8px;padding:8px 10px;min-width:0;text-align:left;font-size:.85rem;line-height:1.2}
@@ -68,6 +72,29 @@
     <button id="btnOn" disabled>Nyalakan</button>
     <button id="btnOff" disabled>Matikan</button>
   </div>
+</div>
+
+<div class="card">
+  <h2>Timer tidur (menit)</h2>
+  <div class="tchips" id="tchips">
+    <button data-m="15">15</button><button data-m="30">30</button><button data-m="45">45</button><button data-m="60">60</button><button data-m="90">90</button>
+  </div>
+  <div class="row" style="margin-top:4px">
+    <div><label for="tmin">Menit (bebas)</label><input id="tmin" type="number" min="1" max="600" value="45" inputmode="numeric"></div>
+    <div><label for="tfade">Cara mati</label>
+      <select id="tfade">
+        <option value="300" selected>Meredup 5 menit</option>
+        <option value="600">Meredup 10 menit</option>
+        <option value="60">Meredup 1 menit</option>
+        <option value="0">Langsung mati</option>
+      </select></div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="btnTimer" class="primary" disabled>Mulai timer</button>
+    <button id="btnTimerCancel" disabled>Batalkan</button>
+  </div>
+  <div id="timerStatus" class="hint">Belum ada timer.</div>
+  <div class="hint">Yang mematikan lampu adalah bohlam sendiri, jadi HP boleh dikunci. Hitung mundur di sini hanya perkiraan dari halaman ini. "Batalkan" mengirim perintah Nyalakan; apakah itu benar-benar membatalkan timer di bohlam belum saya uji.</div>
 </div>
 
 <div class="card">
@@ -154,13 +181,13 @@
   const el = {
     support: $('support'), btnConnect: $('btnConnect'), btnDisconnect: $('btnDisconnect'),
     dot: $('dot'), statusText: $('statusText'), key: $('key'),
-    btnOn: $('btnOn'), btnOff: $('btnOff'), wheel: $('wheel'), colorV: $('colorV'), presets: $('presets'), btnSave: $('btnSave'), white: $('white'), bright: $('bright'),
+    btnOn: $('btnOn'), btnOff: $('btnOff'), wheel: $('wheel'), colorV: $('colorV'), presets: $('presets'), btnSave: $('btnSave'), tmin: $('tmin'), tfade: $('tfade'), btnTimer: $('btnTimer'), btnTimerCancel: $('btnTimerCancel'), timerStatus: $('timerStatus'), white: $('white'), bright: $('bright'),
     whiteV: $('whiteV'), brightV: $('brightV'), btnApply: $('btnApply'), btnWarm: $('btnWarm'),
     btnInfo: $('btnInfo'), newKey: $('newKey'), btnRand: $('btnRand'), nodeId: $('nodeId'), groupId: $('groupId'),
     btnCommission: $('btnCommission'), btnWipe: $('btnWipe'), raw: $('raw'), btnRaw: $('btnRaw'),
     log: $('log'), btnCopy: $('btnCopy'), btnClear: $('btnClear')
   };
-  const controls = [el.btnOn, el.btnOff, el.btnSave, el.white, el.bright, el.btnApply, el.btnWarm,
+  const controls = [el.btnOn, el.btnOff, el.btnSave, el.btnTimer, el.btnTimerCancel, el.white, el.bright, el.btnApply, el.btnWarm,
                     el.btnInfo, el.btnCommission, el.btnWipe, el.btnRaw, el.btnDisconnect];
 
   let device = null, server = null, ch = null;
@@ -196,13 +223,14 @@
 
   // --- Kirim (diserialkan agar tidak bentrok) ---
   function send(pkt, label, quiet) {
-    if (!ch) { log('er', 'Belum terhubung'); return Promise.resolve(); }
+    if (!ch) { log('er', 'Belum terhubung'); return Promise.resolve(false); }
     queue = queue.then(async () => {
       if (!quiet) log('tx', `TX ${label}: ${hex(pkt)}`);
       try {
         if (ch.writeValueWithResponse) await ch.writeValueWithResponse(pkt);
         else await ch.writeValue(pkt);
-      } catch (e) { log('er', `Gagal kirim: ${e.message}`); }
+        return true;
+      } catch (e) { log('er', `Gagal kirim: ${e.message}`); return false; }
     });
     return queue;
   }
@@ -426,6 +454,54 @@
     persist(); renderPresets(); log('in', `Tersimpan: ${n}`);
   };
   renderPresets();
+
+  // --- Timer tidur ---
+  // TURN_OFF membawa [jeda detik u16][lama meredup detik u16]; bohlam yang menjalankan hitungannya.
+  // Asumsi (belum terbukti): meredup dimulai setelah jeda, jadi total = jeda + meredup.
+  const tchips = [...document.querySelectorAll('#tchips button')];
+  const markChip = () => tchips.forEach(b => b.classList.toggle('sel', b.dataset.m === String(Math.round(+el.tmin.value))));
+  tchips.forEach(b => b.onclick = () => { el.tmin.value = b.dataset.m; markChip(); });
+  el.tmin.addEventListener('input', markChip);
+  markChip();
+
+  let timerInfo = null, tick = null;
+  const clock = ts => new Date(ts).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', hour12: false });
+  function fmtLeft(sec) {
+    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(s).padStart(2, '0');
+  }
+  const saveTimer = () => { try { timerInfo ? localStorage.setItem('ilumi.timer', JSON.stringify(timerInfo)) : localStorage.removeItem('ilumi.timer'); } catch (_) {} };
+  function renderTimer() {
+    if (!timerInfo) { el.timerStatus.textContent = 'Belum ada timer.'; return; }
+    const now = Date.now();
+    if (now >= timerInfo.offAt) {
+      el.timerStatus.textContent = 'Waktu timer sudah lewat. Lampu seharusnya sudah mati.';
+      clearInterval(tick); tick = null; timerInfo = null; saveTimer(); return;
+    }
+    if (now >= timerInfo.fadeAt) { el.timerStatus.textContent = `Lampu sedang meredup, mati sekitar pukul ${clock(timerInfo.offAt)}.`; return; }
+    el.timerStatus.textContent = `Mulai meredup ${fmtLeft(Math.round((timerInfo.fadeAt - now) / 1000))} lagi · mati sekitar pukul ${clock(timerInfo.offAt)}.`;
+  }
+  function startTick() { clearInterval(tick); tick = setInterval(renderTimer, 1000); renderTimer(); }
+  try { const t = JSON.parse(localStorage.getItem('ilumi.timer') || 'null'); if (t && t.offAt > Date.now()) { timerInfo = t; startTick(); } } catch (_) {}
+
+  el.btnTimer.onclick = guard(async () => {
+    const min = Math.round(+el.tmin.value);
+    if (!(min >= 1 && min <= 600)) throw new Error('Isi menit antara 1 dan 600');
+    const total = min * 60, fade = Math.min(+el.tfade.value, total), delay = total - fade;
+    const ok = await send(buildPacket(CMD.TURN_OFF, [...u16(delay), ...u16(fade)]),
+                          `TIMER TURN_OFF jeda=${delay}s meredup=${fade}s (total ${min} menit)`);
+    if (!ok) return;
+    const now = Date.now();
+    timerInfo = { fadeAt: now + delay * 1000, offAt: now + total * 1000 };
+    saveTimer(); startTick();
+    log('in', `Timer dikirim ke bohlam: mati sekitar pukul ${clock(timerInfo.offAt)}.`);
+  });
+  el.btnTimerCancel.onclick = guard(async () => {
+    const ok = await send(buildPacket(CMD.TURN_ON, [...u16(0), ...u16(0)]), 'TIMER BATAL (TURN_ON)');
+    if (!ok) return;
+    timerInfo = null; saveTimer(); renderTimer();
+    log('in', 'Perintah Nyalakan dikirim. Cek lampu: apakah timer benar-benar batal belum terbukti.');
+  });
 
   // --- Event UI ---
   el.btnConnect.onclick = connect;
